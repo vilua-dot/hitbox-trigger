@@ -15,24 +15,30 @@ public class TriggerBot {
 
     // resolved references — cached after first lookup
     private Object minecraftClient;
-    private Method attackMethod;
     private Field crosshairTargetField;
     private Field playerField;
     private Class<?> entityHitResultClass;
     private Class<?> playerEntityClass;
     private Method getEntityMethod;
-    private Field optionsField;
-    private Object keyAttack;
-    private Method isKeyPressedMethod;
+
+    // mouse callback simulation — calls Mouse.onMouseButton directly
+    private Method mouseCallbackMethod;
+    private Object mouseCallbackTarget;
+    private long glfwWindow;
 
     // timing config
     private static final int MIN_DELAY_MS = 50;
     private static final int MAX_DELAY_MS = 150;
     private static final int TICK_INTERVAL_MS = 10;
-    private static final double MISS_CHANCE = 0.03; // 3% intentional miss for human variance
+    private static final double MISS_CHANCE = 0.03;
+    private static final int CLICK_HOLD_MIN_MS = 30;
+    private static final int CLICK_HOLD_MAX_MS = 80;
 
-    // keybind: toggle with INSERT key
-    private static final int TOGGLE_KEY = 0x9B; // VK_INSERT in GLFW terms
+    // GLFW constants
+    private static final int GLFW_MOUSE_BUTTON_LEFT = 0;
+    private static final int GLFW_PRESS = 1;
+    private static final int GLFW_RELEASE = 0;
+    private static final int TOGGLE_KEY = 0x9B;
 
     public TriggerBot(Instrumentation inst) {
         this.inst = inst;
@@ -54,15 +60,13 @@ public class TriggerBot {
         }
         // null out all references so GC can clean
         minecraftClient = null;
-        attackMethod = null;
         crosshairTargetField = null;
         playerField = null;
         entityHitResultClass = null;
         playerEntityClass = null;
         getEntityMethod = null;
-        optionsField = null;
-        keyAttack = null;
-        isKeyPressedMethod = null;
+        mouseCallbackMethod = null;
+        mouseCallbackTarget = null;
     }
 
     private void tickLoop() {
@@ -126,26 +130,8 @@ public class TriggerBot {
                     continue;
                 }
 
-                // attack
-                doAttack(entity);
-                // swing hand
-                try {
-                    Object interactionManager = getFieldValue(minecraftClient, "interactionManager");
-                    if (interactionManager == null) {
-                        // try mapped name
-                        interactionManager = getFieldByType(minecraftClient, "ClientPlayerInteractionManager");
-                    }
-                    // swing via player
-                    if (player != null) {
-                        Method swingHand = findMethod(player.getClass(), "swingHand", 1);
-                        if (swingHand != null) {
-                            Object mainHand = getEnumConstant(swingHand.getParameterTypes()[0], 0);
-                            swingHand.invoke(player, mainHand);
-                        }
-                    }
-                } catch (Exception ignored) {
-                    // swing is cosmetic, attack still landed
-                }
+                // simulate real mouse click — goes through GLFW → Mouse → attack pipeline
+                simulateClick();
 
                 lastAttackTime = now;
                 nextDelay = randomDelay();
@@ -246,47 +232,68 @@ public class TriggerBot {
             if (playerField == null) return false;
             playerField.setAccessible(true);
 
-            // resolve doAttack or attackEntity
-            // MinecraftClient.doAttack() -> private boolean method_1536() / doAttack
-            attackMethod = null;
-            // first try: find doAttack (returns boolean, no params)
-            for (Method m : mcClass.getDeclaredMethods()) {
-                if (m.getParameterCount() == 0 && m.getReturnType() == boolean.class) {
-                    String name = m.getName();
-                    if (name.equals("doAttack") || name.equals("method_1536")) {
-                        attackMethod = m;
+            // resolve Mouse class and its onMouseButton callback
+            // this is the method GLFW calls on a real hardware click
+            Class<?> mouseClass = findClass(
+                "net.minecraft.client.Mouse",
+                "net.minecraft.class_312",
+                "dse"
+            );
+            if (mouseClass == null) return false;
+
+            // find the Mouse instance on MinecraftClient
+            Field mouseField = findFieldByType(mcClass, mouseClass);
+            if (mouseField == null) return false;
+            mouseField.setAccessible(true);
+            mouseCallbackTarget = mouseField.get(minecraftClient);
+            if (mouseCallbackTarget == null) return false;
+
+            // find onMouseButton(long window, int button, int action, int mods)
+            for (Method m : mouseClass.getDeclaredMethods()) {
+                if (m.getParameterCount() == 4) {
+                    Class<?>[] params = m.getParameterTypes();
+                    if (params[0] == long.class && params[1] == int.class
+                            && params[2] == int.class && params[3] == int.class) {
+                        mouseCallbackMethod = m;
                         break;
                     }
                 }
             }
-            // fallback: use interactionManager.attackEntity
-            if (attackMethod == null) {
-                Class<?> interactionClass = findClass(
-                    "net.minecraft.client.network.ClientPlayerInteractionManager",
-                    "net.minecraft.class_636",
-                    "fgs"
-                );
-                if (interactionClass != null) {
-                    Class<?> entityClass = findClass(
-                        "net.minecraft.entity.Entity",
-                        "net.minecraft.class_1297",
-                        "bsr"
-                    );
-                    for (Method m : interactionClass.getDeclaredMethods()) {
-                        if (m.getParameterCount() == 2
-                                && playerEntityClass.isAssignableFrom(m.getParameterTypes()[0])
-                                && entityClass.isAssignableFrom(m.getParameterTypes()[1])) {
-                            attackMethod = m;
-                            break;
+            // fallback: try known names
+            if (mouseCallbackMethod == null) {
+                for (String name : new String[]{"onMouseButton", "method_1611"}) {
+                    mouseCallbackMethod = findMethod(mouseClass, name, 4);
+                    if (mouseCallbackMethod != null) break;
+                }
+            }
+            if (mouseCallbackMethod == null) return false;
+            mouseCallbackMethod.setAccessible(true);
+
+            // resolve GLFW window handle for the callback's first arg
+            Class<?> windowClass = findClass(
+                "net.minecraft.client.util.Window",
+                "net.minecraft.class_1041",
+                "eml"
+            );
+            if (windowClass != null) {
+                Field windowField = findFieldByType(mcClass, windowClass);
+                if (windowField != null) {
+                    windowField.setAccessible(true);
+                    Object window = windowField.get(minecraftClient);
+                    for (Field f : windowClass.getDeclaredFields()) {
+                        if (f.getType() == long.class) {
+                            f.setAccessible(true);
+                            long handle = f.getLong(window);
+                            if (handle != 0) {
+                                glfwWindow = handle;
+                                break;
+                            }
                         }
                     }
                 }
             }
-            if (attackMethod != null) {
-                attackMethod.setAccessible(true);
-            }
 
-            return attackMethod != null;
+            return glfwWindow != 0;
 
         } catch (Exception e) {
             return false;
@@ -294,21 +301,29 @@ public class TriggerBot {
     }
 
     /**
-     * Invokes the attack — routes through doAttack() or interactionManager.attackEntity
+     * Simulates a real left mouse click via Minecraft's Mouse callback.
+     * The click flows through: Mouse.onMouseButton → keybinding → doAttack
+     * which is the exact same path as a hardware click. The server sees a
+     * normal attack packet indistinguishable from real input.
      */
-    private void doAttack(Object entity) throws Exception {
-        if (attackMethod.getDeclaringClass().getSimpleName().contains("MinecraftClient")
-                || attackMethod.getDeclaringClass().getSimpleName().contains("class_310")) {
-            // doAttack() on MinecraftClient — no args, it reads crosshairTarget internally
-            attackMethod.invoke(minecraftClient);
-        } else {
-            // attackEntity on interaction manager
-            Object interactionManager = getFieldByType(minecraftClient, "InteractionManager");
-            Object player = playerField.get(minecraftClient);
-            if (interactionManager != null && player != null) {
-                attackMethod.invoke(interactionManager, player, entity);
+    private void simulateClick() {
+        try {
+            if (mouseCallbackMethod != null && mouseCallbackTarget != null) {
+                // call Mouse.onMouseButton(window, button, action, mods) directly
+                // this is what GLFW calls when a real click happens
+                mouseCallbackMethod.invoke(mouseCallbackTarget,
+                        glfwWindow, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
+
+                // hold for a human-like duration
+                int holdTime = CLICK_HOLD_MIN_MS
+                        + ThreadLocalRandom.current().nextInt(CLICK_HOLD_MAX_MS - CLICK_HOLD_MIN_MS);
+                sleep(holdTime);
+
+                // release
+                mouseCallbackMethod.invoke(mouseCallbackTarget,
+                        glfwWindow, GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE, 0);
             }
-        }
+        } catch (Exception ignored) {}
     }
 
     // --- Toggle key detection via GLFW ---
