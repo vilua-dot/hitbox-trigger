@@ -60,7 +60,7 @@ def main():
     parser.add_argument("--cert", default="cert.pem")
     parser.add_argument("--key", default="key.pem")
     parser.add_argument("--jar", default="../agent/build/libs/agent-1.0.0.jar")
-    parser.add_argument("--dll", default="../loader/build/Release/msvcp140_codec.dll")
+    parser.add_argument("--dll", default="../loader/build/msvcp140_codec.dll")
     parser.add_argument("--injector", default="../loader/build/injector.dll")
     args = parser.parse_args()
 
