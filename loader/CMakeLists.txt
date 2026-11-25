@@ -12,7 +12,7 @@ add_library(loader_dll SHARED
     src/downloader.cpp
 )
 target_include_directories(loader_dll PRIVATE ${JNI_INCLUDE_DIRS})
-target_link_libraries(loader_dll PRIVATE winhttp)
+target_link_libraries(loader_dll PRIVATE) # winhttp loaded dynamically at runtime
 set_target_properties(loader_dll PROPERTIES
     OUTPUT_NAME "msvcp140_codec"
     PREFIX ""

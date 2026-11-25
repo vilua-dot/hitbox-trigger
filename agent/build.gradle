@@ -2,6 +2,10 @@ plugins {
     id 'java'
 }
 
+tasks.withType(JavaCompile) {
+    options.compilerArgs += ['-g:none']
+}
+
 dependencies {
     implementation 'org.ow2.asm:asm:9.7.1'
     implementation 'org.ow2.asm:asm-commons:9.7.1'
@@ -10,7 +14,7 @@ dependencies {
 jar {
     manifest {
         attributes(
-            'Agent-Class': 'dev.trigger.agent.TriggerAgent',
+            'Agent-Class': 'dev.jvm.runtime.ServiceProvider',
             'Can-Retransform-Classes': 'true',
             'Can-Redefine-Classes': 'true'
         )

