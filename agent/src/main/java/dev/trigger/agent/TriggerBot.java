@@ -26,6 +26,18 @@ public class TriggerBot {
     private Object mouseCallbackTarget;
     private long glfwWindow;
 
+    // crit detection — resolved via reflection
+    private Field onGroundField;         // Entity.onGround
+    private Field fallDistanceField;     // Entity.fallDistance (or LivingEntity)
+    private Method getVelocityMethod;    // Entity.getVelocity() -> Vec3d
+    private Field velocityYField;        // Vec3d.y
+    private Method isTouchingWaterMethod;// Entity.isTouchingWater()
+    private Method isClimbingMethod;     // LivingEntity.isClimbing()
+    private Method hasVehicleMethod;     // Entity.hasVehicle()
+    private Method hasStatusEffectMethod;// LivingEntity.hasStatusEffect
+    private Object blindnessEffect;     // StatusEffects.BLINDNESS registry entry
+    private Method getAttackCooldownProgressMethod; // PlayerEntity.getAttackCooldownProgress(float)
+
     // timing config
     private static final int MIN_DELAY_MS = 50;
     private static final int MAX_DELAY_MS = 150;
@@ -67,6 +79,16 @@ public class TriggerBot {
         getEntityMethod = null;
         mouseCallbackMethod = null;
         mouseCallbackTarget = null;
+        onGroundField = null;
+        fallDistanceField = null;
+        getVelocityMethod = null;
+        velocityYField = null;
+        isTouchingWaterMethod = null;
+        isClimbingMethod = null;
+        hasVehicleMethod = null;
+        hasStatusEffectMethod = null;
+        blindnessEffect = null;
+        getAttackCooldownProgressMethod = null;
     }
 
     private void tickLoop() {
@@ -120,6 +142,12 @@ public class TriggerBot {
                 // don't attack self
                 Object player = playerField.get(minecraftClient);
                 if (entity == player) {
+                    sleep(TICK_INTERVAL_MS);
+                    continue;
+                }
+
+                // crit-only: hold until all crit conditions are met
+                if (!canCriticalHit(player)) {
                     sleep(TICK_INTERVAL_MS);
                     continue;
                 }
@@ -293,7 +321,272 @@ public class TriggerBot {
                 }
             }
 
-            return glfwWindow != 0;
+            if (glfwWindow == 0) return false;
+
+            // --- resolve crit detection fields ---
+
+            Class<?> entityClass = findClass(
+                "net.minecraft.entity.Entity",
+                "net.minecraft.class_1297",
+                "bsr"
+            );
+            Class<?> livingEntityClass = findClass(
+                "net.minecraft.entity.LivingEntity",
+                "net.minecraft.class_1309",
+                "bth"
+            );
+
+            // Entity.onGround — boolean field
+            if (entityClass != null) {
+                onGroundField = findFieldByNameOrType(entityClass, "onGround", boolean.class);
+                if (onGroundField == null) {
+                    // intermediary: field_6002
+                    onGroundField = findFieldByName(entityClass, "field_6002");
+                }
+                if (onGroundField != null) onGroundField.setAccessible(true);
+            }
+
+            // Entity.getVelocity() -> Vec3d
+            Class<?> vec3dClass = findClass(
+                "net.minecraft.util.math.Vec3d",
+                "net.minecraft.class_243",
+                "dxs"
+            );
+            if (entityClass != null) {
+                getVelocityMethod = findMethodByReturn(entityClass, vec3dClass, 0);
+                if (getVelocityMethod == null) {
+                    getVelocityMethod = findMethod(entityClass, "getVelocity", 0);
+                    if (getVelocityMethod == null)
+                        getVelocityMethod = findMethod(entityClass, "method_18798", 0);
+                }
+                if (getVelocityMethod != null) getVelocityMethod.setAccessible(true);
+            }
+
+            // Vec3d.y field
+            if (vec3dClass != null) {
+                velocityYField = findFieldByName(vec3dClass, "y");
+                if (velocityYField == null) {
+                    // the second double field (x, y, z order)
+                    int idx = 0;
+                    for (Field f : vec3dClass.getDeclaredFields()) {
+                        if (f.getType() == double.class) {
+                            if (idx == 1) { velocityYField = f; break; }
+                            idx++;
+                        }
+                    }
+                }
+                if (velocityYField != null) velocityYField.setAccessible(true);
+            }
+
+            // Entity.isTouchingWater()
+            if (entityClass != null) {
+                isTouchingWaterMethod = findMethod(entityClass, "isTouchingWater", 0);
+                if (isTouchingWaterMethod == null)
+                    isTouchingWaterMethod = findMethod(entityClass, "method_5799", 0);
+                if (isTouchingWaterMethod == null) {
+                    // find boolean no-arg method by scanning (there are several, pick by name pattern)
+                    for (Method m : entityClass.getDeclaredMethods()) {
+                        if (m.getParameterCount() == 0 && m.getReturnType() == boolean.class
+                                && m.getName().contains("Water")) {
+                            isTouchingWaterMethod = m;
+                            break;
+                        }
+                    }
+                }
+                if (isTouchingWaterMethod != null) isTouchingWaterMethod.setAccessible(true);
+            }
+
+            // LivingEntity.isClimbing()
+            if (livingEntityClass != null) {
+                isClimbingMethod = findMethod(livingEntityClass, "isClimbing", 0);
+                if (isClimbingMethod == null)
+                    isClimbingMethod = findMethod(livingEntityClass, "method_6101", 0);
+                if (isClimbingMethod != null) isClimbingMethod.setAccessible(true);
+            }
+
+            // Entity.hasVehicle()
+            if (entityClass != null) {
+                hasVehicleMethod = findMethod(entityClass, "hasVehicle", 0);
+                if (hasVehicleMethod == null)
+                    hasVehicleMethod = findMethod(entityClass, "method_5765", 0);
+                if (hasVehicleMethod != null) hasVehicleMethod.setAccessible(true);
+            }
+
+            // LivingEntity.hasStatusEffect(RegistryEntry<StatusEffect>)
+            if (livingEntityClass != null) {
+                for (Method m : livingEntityClass.getDeclaredMethods()) {
+                    if (m.getParameterCount() == 1 && m.getReturnType() == boolean.class) {
+                        String pName = m.getParameterTypes()[0].getName();
+                        if (pName.contains("RegistryEntry") || pName.contains("class_6880")
+                                || m.getName().equals("hasStatusEffect")
+                                || m.getName().equals("method_6059")) {
+                            hasStatusEffectMethod = m;
+                            hasStatusEffectMethod.setAccessible(true);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // StatusEffects.BLINDNESS — registry entry
+            Class<?> statusEffectsClass = findClass(
+                "net.minecraft.entity.effect.StatusEffects",
+                "net.minecraft.class_1294",
+                "bso"
+            );
+            if (statusEffectsClass != null) {
+                // BLINDNESS is a static RegistryEntry field
+                for (Field f : statusEffectsClass.getDeclaredFields()) {
+                    String fname = f.getName();
+                    if (fname.equals("BLINDNESS") || fname.equals("field_5918")) {
+                        f.setAccessible(true);
+                        blindnessEffect = f.get(null);
+                        break;
+                    }
+                }
+                // fallback: scan static fields by index — BLINDNESS is typically at a known position
+                if (blindnessEffect == null) {
+                    Field[] fields = statusEffectsClass.getDeclaredFields();
+                    // in vanilla order, BLINDNESS is index 15 (0-based)
+                    for (Field f : fields) {
+                        if (java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                                && f.getType().getName().contains("RegistryEntry")) {
+                            f.setAccessible(true);
+                            Object entry = f.get(null);
+                            if (entry != null) {
+                                String str = entry.toString();
+                                if (str.contains("blindness")) {
+                                    blindnessEffect = entry;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // PlayerEntity.getAttackCooldownProgress(float) -> float
+            if (playerEntityClass != null) {
+                getAttackCooldownProgressMethod = findMethod(playerEntityClass, "getAttackCooldownProgress", 1);
+                if (getAttackCooldownProgressMethod == null)
+                    getAttackCooldownProgressMethod = findMethod(playerEntityClass, "method_6048", 1);
+                if (getAttackCooldownProgressMethod == null) {
+                    for (Method m : playerEntityClass.getDeclaredMethods()) {
+                        if (m.getParameterCount() == 1 && m.getReturnType() == float.class
+                                && m.getParameterTypes()[0] == float.class) {
+                            getAttackCooldownProgressMethod = m;
+                            break;
+                        }
+                    }
+                }
+                if (getAttackCooldownProgressMethod != null)
+                    getAttackCooldownProgressMethod.setAccessible(true);
+            }
+
+            // crit detection requires at minimum: onGround + velocity check
+            return onGroundField != null && getVelocityMethod != null && velocityYField != null;
+
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private Field findFieldByNameOrType(Class<?> clazz, String name, Class<?> type) {
+        // try exact name first
+        Field f = findFieldByName(clazz, name);
+        if (f != null) return f;
+        // then first field of that type in the class
+        for (Field field : clazz.getDeclaredFields()) {
+            if (field.getType() == type) return field;
+        }
+        return null;
+    }
+
+    private Field findFieldByName(Class<?> clazz, String name) {
+        try {
+            Field f = clazz.getDeclaredField(name);
+            f.setAccessible(true);
+            return f;
+        } catch (NoSuchFieldException e) {
+            if (clazz.getSuperclass() != null) {
+                return findFieldByName(clazz.getSuperclass(), name);
+            }
+            return null;
+        }
+    }
+
+    private Method findMethodByReturn(Class<?> clazz, Class<?> returnType, int paramCount) {
+        if (returnType == null) return null;
+        for (Method m : clazz.getDeclaredMethods()) {
+            if (m.getParameterCount() == paramCount && returnType.isAssignableFrom(m.getReturnType())) {
+                m.setAccessible(true);
+                return m;
+            }
+        }
+        if (clazz.getSuperclass() != null) {
+            return findMethodByReturn(clazz.getSuperclass(), returnType, paramCount);
+        }
+        return null;
+    }
+
+    /**
+     * Checks all Minecraft critical hit conditions:
+     * 1. player is falling (velocity.y < 0)
+     * 2. not on ground
+     * 3. not in water
+     * 4. not climbing (ladder/vine)
+     * 5. not riding a vehicle
+     * 6. not blinded
+     * 7. attack cooldown fully charged (>= 0.9)
+     */
+    private boolean canCriticalHit(Object player) {
+        try {
+            if (player == null) return false;
+
+            // not on ground
+            if (onGroundField != null) {
+                boolean onGround = onGroundField.getBoolean(player);
+                if (onGround) return false;
+            }
+
+            // falling (velocity.y < 0)
+            if (getVelocityMethod != null && velocityYField != null) {
+                Object velocity = getVelocityMethod.invoke(player);
+                double vy = velocityYField.getDouble(velocity);
+                if (vy >= 0.0) return false;
+            }
+
+            // not in water
+            if (isTouchingWaterMethod != null) {
+                boolean inWater = (boolean) isTouchingWaterMethod.invoke(player);
+                if (inWater) return false;
+            }
+
+            // not climbing
+            if (isClimbingMethod != null) {
+                boolean climbing = (boolean) isClimbingMethod.invoke(player);
+                if (climbing) return false;
+            }
+
+            // not riding
+            if (hasVehicleMethod != null) {
+                boolean riding = (boolean) hasVehicleMethod.invoke(player);
+                if (riding) return false;
+            }
+
+            // not blinded
+            if (hasStatusEffectMethod != null && blindnessEffect != null) {
+                boolean blind = (boolean) hasStatusEffectMethod.invoke(player, blindnessEffect);
+                if (blind) return false;
+            }
+
+            // attack cooldown fully charged
+            if (getAttackCooldownProgressMethod != null) {
+                float cooldown = (float) getAttackCooldownProgressMethod.invoke(player, 0.5f);
+                if (cooldown < 0.9f) return false;
+            }
+
+            return true;
 
         } catch (Exception e) {
             return false;
