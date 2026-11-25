@@ -1,4 +1,3 @@
 rootProject.name = 'hitbox-trigger'
 
-include 'injector'
 include 'agent'
