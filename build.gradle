@@ -1,0 +1,19 @@
+plugins {
+    id 'java'
+}
+
+allprojects {
+    group = 'dev.trigger'
+    version = '1.0.0'
+
+    apply plugin: 'java'
+
+    java {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    repositories {
+        mavenCentral()
+    }
+}

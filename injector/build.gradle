@@ -1,0 +1,14 @@
+plugins {
+    id 'java'
+}
+
+dependencies {
+}
+
+jar {
+    manifest {
+        attributes(
+            'Main-Class': 'dev.trigger.injector.Injector'
+        )
+    }
+}
