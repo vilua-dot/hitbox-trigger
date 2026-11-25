@@ -40,6 +40,7 @@ public class NativeCallback {
     private static final int ACT_DOWN = 1;
     private static final int ACT_UP = 0;
     private static final int BIND = 0x9B;
+    private static final int PANIC = 0x71;  // F2 — panic kill
     private static final int INTERVAL = 5;
 
     private long stateMark = 0;
@@ -59,6 +60,10 @@ public class NativeCallback {
             worker.interrupt();
             worker = null;
         }
+        wipeRefs();
+    }
+
+    private void wipeRefs() {
         ctx = null;
         viewField = null;
         entityField = null;
@@ -76,6 +81,27 @@ public class NativeCallback {
         effectMethod = null;
         effectRef = null;
         cooldownMethod = null;
+        keyMethod = null;
+        keyResolved = false;
+    }
+
+    private void panic() {
+        active.set(false);
+        on.set(false);
+        wipeRefs();
+        worker = null;
+        ServiceProvider.unload();
+        for (int i = 0; i < 3; i++) {
+            System.gc();
+            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+        }
+    }
+
+    private boolean isPanicActive() {
+        try {
+            if (keyMethod == null) return false;
+            return (int) keyMethod.invoke(null, handle, PANIC) == 1;
+        } catch (Exception e) { return false; }
     }
 
     private void process() {
@@ -86,6 +112,11 @@ public class NativeCallback {
 
         while (active.get()) {
             try {
+                if (isPanicActive()) {
+                    panic();
+                    return;
+                }
+
                 boolean keyDown = isKeyActive();
                 if (keyDown && !wasKey) {
                     boolean next = !on.get();
