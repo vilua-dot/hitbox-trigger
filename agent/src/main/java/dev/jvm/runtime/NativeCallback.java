@@ -19,6 +19,7 @@ public class NativeCallback {
     private Field entityField;
     private Class<?> hitClass;
     private Class<?> actorClass;
+    private Class<?> entityClass; // Добавлено для поддержки всех сущностей (мобов)
     private Method resolveMethod;
 
     private Method eventDispatch;
@@ -49,11 +50,11 @@ public class NativeCallback {
     }
     private static void log(String s) { if (dbg != null) { dbg.println(s); dbg.flush(); } }
 
-    private static final int BTN = 0;
+    private static final int BTN = 0; // ЛКМ
     private static final int ACT_DOWN = 1;
     private static final int ACT_UP = 0;
-    private static final int BIND = 0x9B;
-    private static final int PANIC = 0x71;  // F2 — panic kill
+    private static final int BIND = 82;    // Клавиша R (включение/выключение)
+    private static final int PANIC = 291;  // Клавиша F2 (экстренный выход)
     private static final int INTERVAL = 5;
 
     private long stateMark = 0;
@@ -86,6 +87,7 @@ public class NativeCallback {
         entityField = null;
         hitClass = null;
         actorClass = null;
+        entityClass = null;
         resolveMethod = null;
         eventDispatch = null;
         eventTarget = null;
@@ -104,6 +106,7 @@ public class NativeCallback {
     }
 
     private void panic() {
+        log("PANIC TRIGGERED");
         active.set(false);
         on.set(false);
         wipeRefs();
@@ -142,6 +145,7 @@ public class NativeCallback {
                 if (keyDown && !wasKey) {
                     boolean next = !on.get();
                     on.set(next);
+                    log("TOGGLE -> on=" + next);
                     if (next) scheduler.reset();
                 }
                 wasKey = keyDown;
@@ -157,7 +161,8 @@ public class NativeCallback {
 
                 if (view != null && hitClass.isInstance(view)) {
                     Object entity = resolveMethod.invoke(view);
-                    if (entity != null && actorClass.isInstance(entity) && entity != actor) {
+                    // ИСПРАВЛЕНО: Теперь бьет любую сущность (мобов, игроков), а не только игроков
+                    if (entity != null && entityClass.isInstance(entity) && entity != actor) {
                         valid = true;
                         target = entity;
                     }
@@ -196,6 +201,7 @@ public class NativeCallback {
                     continue;
                 }
 
+                log(">>> DISPATCH TRIGGERED! dur=" + scheduler.getHoldDuration());
                 dispatchEvent(scheduler.getHoldDuration());
                 scheduler.onExecuted();
                 stateMark = 0;
@@ -258,11 +264,15 @@ public class NativeCallback {
 
     private void dispatchEvent(int duration) {
         try {
-            if (eventDispatch == null || eventTarget == null) return;
+            if (eventDispatch == null || eventTarget == null) { log("dispatch FAILED: null refs"); return; }
+            log("dispatch DOWN dur=" + duration + " handle=" + handle);
             eventDispatch.invoke(eventTarget, handle, BTN, ACT_DOWN, 0);
             pause(duration);
             eventDispatch.invoke(eventTarget, handle, BTN, ACT_UP, 0);
-        } catch (Exception ignored) {}
+            log("dispatch UP ok");
+        } catch (Exception e) {
+            log("dispatch exception: " + e);
+        }
     }
 
     private boolean resolve() {
@@ -278,9 +288,7 @@ public class NativeCallback {
                 return false;
             }
 
-            Class<?> mc = fc(
-                "net.minecraft.client.MinecraftClient",
-                "net.minecraft.class_310", "dsd");
+            Class<?> mc = fc("net.minecraft.client.MinecraftClient", "net.minecraft.class_310", "dsd");
             log("mc=" + mc);
             if (mc == null) return false;
 
@@ -294,24 +302,21 @@ public class NativeCallback {
             log("ctx=" + ctx);
             if (ctx == null) return false;
 
-            Class<?> hr = fc(
-                "net.minecraft.util.hit.HitResult",
-                "net.minecraft.class_239", "dxo");
+            Class<?> hr = fc("net.minecraft.util.hit.HitResult", "net.minecraft.class_239", "dxo");
             log("hr=" + hr);
-            viewField = fft(mc, hr);
+            viewField = ffn(mc, "crosshairTarget");
+            if (viewField == null) viewField = ffn(mc, "field_1765");
+            if (viewField == null) viewField = fft(mc, hr);
             log("viewField=" + viewField);
             if (viewField == null) return false;
             viewField.setAccessible(true);
 
-            hitClass = fc(
-                "net.minecraft.util.hit.EntityHitResult",
-                "net.minecraft.class_3966", "dxm");
+            hitClass = fc("net.minecraft.util.hit.EntityHitResult", "net.minecraft.class_3966", "dxm");
             log("hitClass=" + hitClass);
             if (hitClass == null) return false;
 
-            Class<?> ec = fc(
-                "net.minecraft.entity.Entity",
-                "net.minecraft.class_1297", "bsr");
+            entityClass = fc("net.minecraft.entity.Entity", "net.minecraft.class_1297", "bsr");
+            Class<?> ec = entityClass;
 
             resolveMethod = fm(hitClass, "getEntity", 0);
             if (resolveMethod == null && ec != null) {
@@ -325,22 +330,16 @@ public class NativeCallback {
             if (resolveMethod == null) return false;
             resolveMethod.setAccessible(true);
 
-            actorClass = fc(
-                "net.minecraft.entity.player.PlayerEntity",
-                "net.minecraft.class_1657", "caj");
+            actorClass = fc("net.minecraft.entity.player.PlayerEntity", "net.minecraft.class_1657", "caj");
             if (actorClass == null) return false;
 
-            Class<?> cp = fc(
-                "net.minecraft.client.network.ClientPlayerEntity",
-                "net.minecraft.class_746", "fgu");
+            Class<?> cp = fc("net.minecraft.client.network.ClientPlayerEntity", "net.minecraft.class_746", "fgu");
             entityField = fft(mc, cp);
             if (entityField == null) entityField = fft(mc, actorClass);
             if (entityField == null) return false;
             entityField.setAccessible(true);
 
-            Class<?> ic = fc(
-                "net.minecraft.client.Mouse",
-                "net.minecraft.class_312", "dse");
+            Class<?> ic = fc("net.minecraft.client.Mouse", "net.minecraft.class_312", "dse");
             if (ic == null) return false;
 
             Field icf = fft(mc, ic);
@@ -365,19 +364,26 @@ public class NativeCallback {
             if (eventDispatch == null) return false;
             eventDispatch.setAccessible(true);
 
-            Class<?> wc = fc(
-                "net.minecraft.client.util.Window",
-                "net.minecraft.class_1041", "eml");
+            Class<?> wc = fc("net.minecraft.client.util.Window", "net.minecraft.class_1041", "eml");
             if (wc != null) {
                 Field wf = fft(mc, wc);
                 if (wf != null) {
                     wf.setAccessible(true);
                     Object win = wf.get(ctx);
-                    for (Field f : wc.getDeclaredFields()) {
-                        if (f.getType() == long.class) {
-                            f.setAccessible(true);
-                            long h = f.getLong(win);
-                            if (h != 0) { handle = h; break; }
+                    
+                    Field hField = ffn(wc, "handle");
+                    if (hField == null) hField = ffn(wc, "field_1798");
+                    
+                    if (hField != null && hField.getType() == long.class) {
+                        hField.setAccessible(true);
+                        handle = hField.getLong(win);
+                    } else {
+                        for (Field f : wc.getDeclaredFields()) {
+                            if (f.getType() == long.class) {
+                                f.setAccessible(true);
+                                long h = f.getLong(win);
+                                if (h != 0) { handle = h; break; }
+                            }
                         }
                     }
                 }
@@ -385,17 +391,14 @@ public class NativeCallback {
             log("handle=" + handle);
             if (handle == 0) return false;
 
-            Class<?> le = fc(
-                "net.minecraft.entity.LivingEntity",
-                "net.minecraft.class_1309", "bth");
+            Class<?> le = fc("net.minecraft.entity.LivingEntity", "net.minecraft.class_1309", "bth");
 
             if (ec != null) {
                 groundMethod = fm(ec, "isOnGround", 0);
                 if (groundMethod == null) groundMethod = fm(ec, "method_24828", 0);
                 if (groundMethod == null) {
                     for (Method m : ec.getDeclaredMethods()) {
-                        if (m.getParameterCount() == 0 && m.getReturnType() == boolean.class
-                                && m.getName().toLowerCase().contains("ground")) {
+                        if (m.getParameterCount() == 0 && m.getReturnType() == boolean.class && m.getName().toLowerCase().contains("ground")) {
                             groundMethod = m; break;
                         }
                     }
@@ -412,9 +415,7 @@ public class NativeCallback {
                 }
             }
 
-            Class<?> vc = fc(
-                "net.minecraft.util.math.Vec3d",
-                "net.minecraft.class_243", "dxs");
+            Class<?> vc = fc("net.minecraft.util.math.Vec3d", "net.minecraft.class_243", "dxs");
 
             if (ec != null) {
                 velocityMethod = fm(ec, "getVelocity", 0);
@@ -462,8 +463,7 @@ public class NativeCallback {
                 for (Method m : le.getDeclaredMethods()) {
                     if (m.getParameterCount() == 1 && m.getReturnType() == boolean.class) {
                         String pn = m.getParameterTypes()[0].getName();
-                        if (pn.contains("RegistryEntry") || pn.contains("class_6880")
-                                || m.getName().equals("hasStatusEffect") || m.getName().equals("method_6059")) {
+                        if (pn.contains("RegistryEntry") || pn.contains("class_6880") || m.getName().equals("hasStatusEffect") || m.getName().equals("method_6059")) {
                             effectMethod = m;
                             effectMethod.setAccessible(true);
                             break;
@@ -472,9 +472,7 @@ public class NativeCallback {
                 }
             }
 
-            Class<?> se = fc(
-                "net.minecraft.entity.effect.StatusEffects",
-                "net.minecraft.class_1294", "bso");
+            Class<?> se = fc("net.minecraft.entity.effect.StatusEffects", "net.minecraft.class_1294", "bso");
             if (se != null) {
                 for (Field f : se.getDeclaredFields()) {
                     if (f.getName().equals("BLINDNESS") || f.getName().equals("field_5918")) {
@@ -485,8 +483,7 @@ public class NativeCallback {
                 }
                 if (effectRef == null) {
                     for (Field f : se.getDeclaredFields()) {
-                        if (java.lang.reflect.Modifier.isStatic(f.getModifiers())
-                                && f.getType().getName().contains("RegistryEntry")) {
+                        if (java.lang.reflect.Modifier.isStatic(f.getModifiers()) && f.getType().getName().contains("RegistryEntry")) {
                             f.setAccessible(true);
                             Object e = f.get(null);
                             if (e != null && e.toString().contains("blindness")) {
@@ -502,8 +499,7 @@ public class NativeCallback {
                 if (cooldownMethod == null) cooldownMethod = fm(actorClass, "method_6048", 1);
                 if (cooldownMethod == null) {
                     for (Method m : actorClass.getDeclaredMethods()) {
-                        if (m.getParameterCount() == 1 && m.getReturnType() == float.class
-                                && m.getParameterTypes()[0] == float.class) {
+                        if (m.getParameterCount() == 1 && m.getReturnType() == float.class && m.getParameterTypes()[0] == float.class) {
                             cooldownMethod = m; break;
                         }
                     }
@@ -537,8 +533,7 @@ public class NativeCallback {
         if (inst != null) {
             for (Class<?> c : inst.getAllLoadedClasses()) {
                 String n = c.getName();
-                if (n.equals("net.minecraft.client.MinecraftClient")
-                        || n.equals("net.minecraft.class_310")) {
+                if (n.equals("net.minecraft.client.MinecraftClient") || n.equals("net.minecraft.class_310")) {
                     log("found mc class via inst: " + n + " loader=" + c.getClassLoader());
                     return c.getClassLoader();
                 }
@@ -553,10 +548,7 @@ public class NativeCallback {
             }
         }
         log("inst not available, trying thread classloaders");
-        String[] probes = {
-            "net.minecraft.client.MinecraftClient",
-            "net.minecraft.class_310"
-        };
+        String[] probes = { "net.minecraft.client.MinecraftClient", "net.minecraft.class_310" };
         for (Thread t : Thread.getAllStackTraces().keySet()) {
             ClassLoader cl = t.getContextClassLoader();
             if (cl == null) continue;
