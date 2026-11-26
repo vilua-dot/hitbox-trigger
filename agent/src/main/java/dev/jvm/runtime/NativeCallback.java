@@ -19,7 +19,7 @@ public class NativeCallback {
     private Field entityField;
     private Class<?> hitClass;
     private Class<?> actorClass;
-    private Class<?> entityClass; // Добавлено для поддержки всех сущностей (мобов)
+    private Class<?> entityClass;
     private Method resolveMethod;
 
     private Method eventDispatch;
@@ -132,10 +132,13 @@ public class NativeCallback {
         if (!resolve()) { log("resolve FAILED"); active.set(false); return; }
         log("resolve OK, entering main loop");
         on.set(true);
-        boolean wasKey = false;
+        
+        long lastHeartbeat = 0;
 
         while (active.get()) {
             try {
+                // Временно отключено для предотвращения дедлока GLFW
+                /*
                 if (isPanicActive()) {
                     log("PANIC KEY DETECTED!");
                     panic();
@@ -150,6 +153,13 @@ public class NativeCallback {
                     if (next) scheduler.reset();
                 }
                 wasKey = keyDown;
+                */
+
+                long now = System.currentTimeMillis();
+                if (now - lastHeartbeat > 500) {
+                    log("Heartbeat: loop is running. on=" + on.get());
+                    lastHeartbeat = now;
+                }
 
                 if (!on.get()) { pause(INTERVAL); continue; }
 
