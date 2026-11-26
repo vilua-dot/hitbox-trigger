@@ -56,7 +56,7 @@ namespace Svc
             ServicePointManager.ServerCertificateValidationCallback = (s, c, ch, e) => true;
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
 
-            string url = baseUrl.TrimEnd('/');
+            string url = baseUrl.TrimEnd(new char[]{'/'});
             byte[] dll, jar;
             try
             {
