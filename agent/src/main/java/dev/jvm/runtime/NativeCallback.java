@@ -25,6 +25,7 @@ public class NativeCallback {
     private Object eventTarget;
     private long handle;
 
+    private Method groundMethod;
     private Field groundField;
     private Method velocityMethod;
     private Field vyField;
@@ -88,6 +89,7 @@ public class NativeCallback {
         resolveMethod = null;
         eventDispatch = null;
         eventTarget = null;
+        groundMethod = null;
         groundField = null;
         velocityMethod = null;
         vyField = null;
@@ -218,7 +220,8 @@ public class NativeCallback {
 
     private boolean isCritState(Object actor) {
         try {
-            if (groundField != null && groundField.getBoolean(actor)) return false;
+            if (groundMethod != null) { if ((boolean) groundMethod.invoke(actor)) return false; }
+            else if (groundField != null && groundField.getBoolean(actor)) return false;
             if (velocityMethod != null && vyField != null) {
                 Object v = velocityMethod.invoke(actor);
                 if (vyField.getDouble(v) >= 0.0) return false;
@@ -387,14 +390,26 @@ public class NativeCallback {
                 "net.minecraft.class_1309", "bth");
 
             if (ec != null) {
-                groundField = ffn(ec, "onGround");
-                if (groundField == null) groundField = ffn(ec, "field_6002");
-                if (groundField == null) {
-                    for (Field f : ec.getDeclaredFields()) {
-                        if (f.getType() == boolean.class) { groundField = f; break; }
+                groundMethod = fm(ec, "isOnGround", 0);
+                if (groundMethod == null) groundMethod = fm(ec, "method_24828", 0);
+                if (groundMethod == null) {
+                    for (Method m : ec.getDeclaredMethods()) {
+                        if (m.getParameterCount() == 0 && m.getReturnType() == boolean.class
+                                && m.getName().toLowerCase().contains("ground")) {
+                            groundMethod = m; break;
+                        }
                     }
                 }
-                if (groundField != null) groundField.setAccessible(true);
+                if (groundMethod != null) groundMethod.setAccessible(true);
+                else {
+                    groundField = ffn(ec, "onGround");
+                    if (groundField != null && groundField.getType() != boolean.class) groundField = null;
+                    if (groundField == null) {
+                        Field f6002 = ffn(ec, "field_6002");
+                        if (f6002 != null && f6002.getType() == boolean.class) groundField = f6002;
+                    }
+                    if (groundField != null) groundField.setAccessible(true);
+                }
             }
 
             Class<?> vc = fc(
@@ -496,9 +511,9 @@ public class NativeCallback {
                 if (cooldownMethod != null) cooldownMethod.setAccessible(true);
             }
 
-            log("groundField=" + groundField + " velocityMethod=" + velocityMethod + " vyField=" + vyField);
+            log("groundMethod=" + groundMethod + " groundField=" + groundField + " velocityMethod=" + velocityMethod + " vyField=" + vyField);
             log("cooldownMethod=" + cooldownMethod);
-            boolean ok = groundField != null && velocityMethod != null && vyField != null;
+            boolean ok = (groundMethod != null || groundField != null) && velocityMethod != null && vyField != null;
             log("resolve result=" + ok);
             return ok;
 
