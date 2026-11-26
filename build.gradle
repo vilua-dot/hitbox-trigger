@@ -1,19 +1,11 @@
-plugins {
-    id 'java'
-}
-
 allprojects {
-    group = 'dev.trigger'
-    version = '1.0.0'
-
-    apply plugin: 'java'
-
-    java {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
-    }
-
     repositories {
+        // Сначала ищем зависимости в зеркале Aliyun
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        
+        // Официальные репозитории оставляем как резервные
         mavenCentral()
+        gradlePluginPortal()
     }
 }
