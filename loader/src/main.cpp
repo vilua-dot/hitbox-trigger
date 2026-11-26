@@ -1,4 +1,5 @@
-// language: C++20, target: Windows 11, MSVC or MinGW-w64
+// language: C++20, target: Windows 11, MinGW-w64
+// manual-mapped DLL — no CRT startup, no msvcrt, only KERNEL32
 
 #include <windows.h>
 #include "jvm_bridge.h"
@@ -8,12 +9,18 @@ static bool g_mapped = false;
 static SIZE_T g_image_size = 0;
 
 struct InjectionCtx {
-    uint64_t marker;
+    uint64_t marker;      // 0x4D4D
     uint64_t jar_addr;
     uint64_t jar_size;
+    volatile uint64_t status;  // progress code written by DLL, read by injector
 };
 
 static InjectionCtx g_ctx{};
+static volatile uint64_t* g_status = nullptr;
+
+void report(uint64_t code) {
+    if (g_status) *g_status = code;
+}
 
 static void wipe_mapped_image() {
     if (!g_mapped || !g_self) return;
@@ -32,18 +39,31 @@ static void wipe_mapped_image() {
 }
 
 static DWORD WINAPI worker(LPVOID param) {
+    report(0x10);  // worker started
     Sleep(500 + (GetTickCount() % 300));
 
+    report(0x11);  // reading jar bytes
     auto jar = reinterpret_cast<const uint8_t*>(g_ctx.jar_addr);
     auto jar_len = static_cast<int>(g_ctx.jar_size);
 
-    if (!jar || jar_len <= 0 || !jvm_load_agent(jar, jar_len)) {
+    if (!jar || jar_len <= 0) {
+        report(0xE1);  // bad jar pointer or size
         wipe_mapped_image();
         if (!g_mapped) FreeLibraryAndExitThread(g_self, 0);
         return 0;
     }
 
-    // jar bytes are in a separate allocation — injector frees them later
+    report(0x12);  // calling jvm_load_agent
+    bool ok = jvm_load_agent(jar, jar_len);
+
+    if (!ok) {
+        report(0xE2);  // jvm_load_agent failed
+        wipe_mapped_image();
+        if (!g_mapped) FreeLibraryAndExitThread(g_self, 0);
+        return 0;
+    }
+
+    report(0xFF);  // success
     wipe_mapped_image();
 
     Sleep(50);
@@ -60,9 +80,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         g_mapped = (rval > 0xFFFF);
 
         if (g_mapped) {
-            // read context struct passed by injector
             auto ctx = reinterpret_cast<InjectionCtx*>(reserved);
             g_ctx = *ctx;
+            // status field is at offset 24 in the remote InjectionCtx
+            g_status = &ctx->status;
+            report(0x01);  // DllMain entered
 
             auto base = reinterpret_cast<uint8_t*>(hModule);
             auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
@@ -72,8 +94,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
             }
         }
 
+        report(0x02);  // about to create worker thread
         HANDLE t = CreateThread(nullptr, 0, worker, nullptr, 0, nullptr);
         if (t) CloseHandle(t);
+        else report(0xE0);  // CreateThread failed
     }
     return TRUE;
 }

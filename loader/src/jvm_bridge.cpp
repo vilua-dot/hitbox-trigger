@@ -73,9 +73,11 @@ static constexpr auto e_start      = ENC("start");
 static constexpr auto e_class_ext  = ENC(".class");
 
 bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
+    report(0x20);  // jvm_load_agent entered
     JavaVM* vm = find_jvm();
-    if (!vm) return false;
+    if (!vm) { report(0xA0); return false; }  // jvm.dll not found
 
+    report(0x21);  // JVM found
     JNIEnv* env = nullptr;
     bool did_attach = false;
 
@@ -86,18 +88,21 @@ bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
         args.name = nullptr;
         args.group = nullptr;
         if (vm->AttachCurrentThread(reinterpret_cast<void**>(&env), &args) != JNI_OK)
-            return false;
+            { report(0xA1); return false; }  // attach failed
         did_attach = true;
     } else if (rc != JNI_OK) {
+        report(0xA2);  // GetEnv failed
         return false;
     }
 
+    report(0x22);  // JNI env ready
     bool success = false;
 
     jbyteArray byte_array = env->NewByteArray(jar_length);
-    if (!byte_array) goto cleanup;
+    if (!byte_array) { report(0xA3); goto cleanup; }  // NewByteArray failed
     env->SetByteArrayRegion(byte_array, 0, jar_length,
                             reinterpret_cast<const jbyte*>(jar_bytes));
+    report(0x23);  // jar bytes copied to JVM heap
 
     {
         auto d_bais     = DEC(e_bais);
@@ -105,14 +110,18 @@ bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
         auto d_bais_sig = DEC(e_bais_sig);
 
         jclass bais_class = env->FindClass(d_bais);
+        if (!bais_class) { report(0xA4); goto cleanup; }
         jmethodID bais_ctor = env->GetMethodID(bais_class, d_init, d_bais_sig);
+        if (!bais_ctor) { report(0xA5); goto cleanup; }
         jobject bais = env->NewObject(bais_class, bais_ctor, byte_array);
 
         auto d_jis     = DEC(e_jis);
         auto d_jis_sig = DEC(e_jis_sig);
         jclass jis_class = env->FindClass(d_jis);
+        if (!jis_class) { report(0xA6); goto cleanup; }
         jmethodID jis_ctor = env->GetMethodID(jis_class, d_init, d_jis_sig);
         jobject jar_stream = env->NewObject(jis_class, jis_ctor, bais);
+        report(0x24);  // jar stream created
 
         auto d_cl        = DEC(e_cl);
         auto d_getsys    = DEC(e_getsys);
@@ -129,6 +138,7 @@ bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
         jclass ucl_class = env->FindClass(d_ucl);
         jmethodID ucl_ctor = env->GetMethodID(ucl_class, d_init, d_ucl_sig);
         jobject custom_cl = env->NewObject(ucl_class, ucl_ctor, empty_urls, sys_cl);
+        report(0x25);  // URLClassLoader created
 
         auto d_je         = DEC(e_je);
         auto d_getnext    = DEC(e_getnext);
@@ -188,7 +198,10 @@ bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
             if (env->ExceptionCheck()) env->ExceptionClear();
         }
 
-        if (define_method) {
+        if (!define_method) { report(0xA7); goto cleanup; }
+        report(0x26);  // defineClass method resolved
+
+        {
             env->CallVoidMethod(define_method, set_accessible, JNI_TRUE);
 
             auto d_valueof    = DEC(e_valueof);
@@ -255,7 +268,10 @@ bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
                 }
             }
 
+            report(0x27);  // class loading loop done
+
             if (agent_class) {
+                report(0x28);  // agent class found
                 auto d_agentmain  = DEC(e_agentmain);
                 auto d_agentm_sig = DEC(e_agentm_sig);
                 auto d_start      = DEC(e_start);
@@ -267,6 +283,7 @@ bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
                 if (agentmain && !env->ExceptionCheck()) {
                     env->CallStaticVoidMethod(agent_class, agentmain, nullptr, nullptr);
                     if (env->ExceptionCheck()) env->ExceptionClear();
+                    report(0x29);  // agentmain called
                     success = true;
                 } else {
                     if (env->ExceptionCheck()) env->ExceptionClear();
@@ -274,10 +291,15 @@ bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
                     if (agentmain && !env->ExceptionCheck()) {
                         env->CallStaticVoidMethod(agent_class, agentmain);
                         if (env->ExceptionCheck()) env->ExceptionClear();
+                        report(0x2A);  // start() called
                         success = true;
+                    } else {
+                        report(0xA8);  // neither agentmain nor start found
                     }
                 }
                 env->DeleteGlobalRef(agent_class);
+            } else {
+                report(0xA9);  // agent class not found in jar
             }
         }
 

