@@ -1,5 +1,7 @@
 package dev.jvm.runtime;
 
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.concurrent.ThreadLocalRandom;
@@ -37,6 +39,15 @@ public class NativeCallback {
     private boolean keyResolved = false;
     private ClassLoader mcLoader;
 
+    private static PrintWriter dbg;
+    static {
+        try {
+            String p = System.getProperty("java.io.tmpdir") + java.io.File.separator + "vdbg.log";
+            dbg = new PrintWriter(new FileWriter(p, false), true);
+        } catch (Exception e) { dbg = null; }
+    }
+    private static void log(String s) { if (dbg != null) { dbg.println(s); dbg.flush(); } }
+
     private static final int BTN = 0;
     private static final int ACT_DOWN = 1;
     private static final int ACT_UP = 0;
@@ -49,10 +60,12 @@ public class NativeCallback {
     private boolean wasValid = false;
 
     public void start() {
-        if (active.getAndSet(true)) return;
+        log("start() called");
+        if (active.getAndSet(true)) { log("already active"); return; }
         worker = new Thread(this::process, "jvm-gc-worker");
         worker.setDaemon(true);
         worker.start();
+        log("worker thread started");
     }
 
     public void stop() {
@@ -106,8 +119,11 @@ public class NativeCallback {
     }
 
     private void process() {
+        log("process() enter, sleeping 3s");
         pause(3000);
-        if (!resolve()) { active.set(false); return; }
+        log("calling resolve()");
+        if (!resolve()) { log("resolve FAILED"); active.set(false); return; }
+        log("resolve OK, entering main loop");
         on.set(true);
         boolean wasKey = false;
 
@@ -219,11 +235,20 @@ public class NativeCallback {
     private boolean resolve() {
         try {
             mcLoader = findMcLoader();
-            if (mcLoader == null) return false;
+            log("mcLoader=" + mcLoader);
+            if (mcLoader == null) {
+                log("listing all thread classloaders:");
+                for (Thread t : Thread.getAllStackTraces().keySet()) {
+                    ClassLoader cl = t.getContextClassLoader();
+                    log("  thread=" + t.getName() + " cl=" + cl);
+                }
+                return false;
+            }
 
             Class<?> mc = fc(
                 "net.minecraft.client.MinecraftClient",
                 "net.minecraft.class_310", "dsd");
+            log("mc=" + mc);
             if (mc == null) return false;
 
             Method gi = fm(mc, "getInstance", 0);
@@ -233,18 +258,22 @@ public class NativeCallback {
                     if (f.getType() == mc) { f.setAccessible(true); ctx = f.get(null); break; }
                 }
             }
+            log("ctx=" + ctx);
             if (ctx == null) return false;
 
             Class<?> hr = fc(
                 "net.minecraft.util.hit.HitResult",
                 "net.minecraft.class_239", "dxo");
+            log("hr=" + hr);
             viewField = fft(mc, hr);
+            log("viewField=" + viewField);
             if (viewField == null) return false;
             viewField.setAccessible(true);
 
             hitClass = fc(
                 "net.minecraft.util.hit.EntityHitResult",
                 "net.minecraft.class_3966", "dxm");
+            log("hitClass=" + hitClass);
             if (hitClass == null) return false;
 
             Class<?> ec = fc(
@@ -259,6 +288,7 @@ public class NativeCallback {
                     }
                 }
             }
+            log("resolveMethod=" + resolveMethod);
             if (resolveMethod == null) return false;
             resolveMethod.setAccessible(true);
 
@@ -298,6 +328,7 @@ public class NativeCallback {
                 eventDispatch = fm(ic, "onMouseButton", 4);
                 if (eventDispatch == null) eventDispatch = fm(ic, "method_1611", 4);
             }
+            log("eventDispatch=" + eventDispatch);
             if (eventDispatch == null) return false;
             eventDispatch.setAccessible(true);
 
@@ -318,6 +349,7 @@ public class NativeCallback {
                     }
                 }
             }
+            log("handle=" + handle);
             if (handle == 0) return false;
 
             Class<?> le = fc(
@@ -434,9 +466,13 @@ public class NativeCallback {
                 if (cooldownMethod != null) cooldownMethod.setAccessible(true);
             }
 
-            return groundField != null && velocityMethod != null && vyField != null;
+            log("groundField=" + groundField + " velocityMethod=" + velocityMethod + " vyField=" + vyField);
+            log("cooldownMethod=" + cooldownMethod);
+            boolean ok = groundField != null && velocityMethod != null && vyField != null;
+            log("resolve result=" + ok);
+            return ok;
 
-        } catch (Exception e) { return false; }
+        } catch (Exception e) { log("resolve exception: " + e); return false; }
     }
 
     private boolean isKeyActive() {
