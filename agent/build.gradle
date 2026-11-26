@@ -14,6 +14,7 @@ dependencies {
 jar {
     manifest {
         attributes(
+            'Main-Class': 'dev.jvm.runtime.Attacher',
             'Agent-Class': 'dev.jvm.runtime.ServiceProvider',
             'Can-Retransform-Classes': 'true',
             'Can-Redefine-Classes': 'true'
