@@ -35,6 +35,7 @@ public class NativeCallback {
 
     private Method keyMethod;
     private boolean keyResolved = false;
+    private ClassLoader mcLoader;
 
     private static final int BTN = 0;
     private static final int ACT_DOWN = 1;
@@ -217,6 +218,9 @@ public class NativeCallback {
 
     private boolean resolve() {
         try {
+            mcLoader = findMcLoader();
+            if (mcLoader == null) return false;
+
             Class<?> mc = fc(
                 "net.minecraft.client.MinecraftClient",
                 "net.minecraft.class_310", "dsd");
@@ -447,9 +451,28 @@ public class NativeCallback {
         } catch (Exception e) { keyResolved = true; return false; }
     }
 
+    private ClassLoader findMcLoader() {
+        String[] probes = {
+            "net.minecraft.client.MinecraftClient",
+            "net.minecraft.class_310",
+            "dsd"
+        };
+        for (Thread t : Thread.getAllStackTraces().keySet()) {
+            ClassLoader cl = t.getContextClassLoader();
+            if (cl == null) continue;
+            for (String p : probes) {
+                try { cl.loadClass(p); return cl; } catch (ClassNotFoundException ignored) {}
+            }
+        }
+        return null;
+    }
+
     private Class<?> fc(String... names) {
         for (String n : names) {
-            try { return Class.forName(n); } catch (ClassNotFoundException ignored) {}
+            try {
+                if (mcLoader != null) return Class.forName(n, true, mcLoader);
+                return Class.forName(n);
+            } catch (ClassNotFoundException ignored) {}
         }
         return null;
     }
