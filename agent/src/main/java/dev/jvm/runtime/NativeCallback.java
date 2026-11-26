@@ -488,10 +488,29 @@ public class NativeCallback {
     }
 
     private ClassLoader findMcLoader() {
+        java.lang.instrument.Instrumentation inst = ServiceProvider.inst;
+        if (inst != null) {
+            for (Class<?> c : inst.getAllLoadedClasses()) {
+                String n = c.getName();
+                if (n.equals("net.minecraft.client.MinecraftClient")
+                        || n.equals("net.minecraft.class_310")) {
+                    log("found mc class via inst: " + n + " loader=" + c.getClassLoader());
+                    return c.getClassLoader();
+                }
+            }
+            log("inst scan: no MinecraftClient found, trying pattern match");
+            for (Class<?> c : inst.getAllLoadedClasses()) {
+                String n = c.getName();
+                if (n.startsWith("net.minecraft.client.") && n.contains("Client")) {
+                    log("pattern match: " + n + " loader=" + c.getClassLoader());
+                    return c.getClassLoader();
+                }
+            }
+        }
+        log("inst not available, trying thread classloaders");
         String[] probes = {
             "net.minecraft.client.MinecraftClient",
-            "net.minecraft.class_310",
-            "dsd"
+            "net.minecraft.class_310"
         };
         for (Thread t : Thread.getAllStackTraces().keySet()) {
             ClassLoader cl = t.getContextClassLoader();

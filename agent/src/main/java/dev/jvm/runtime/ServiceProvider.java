@@ -5,8 +5,10 @@ import java.lang.instrument.Instrumentation;
 public class ServiceProvider {
 
     private static NativeCallback handler;
+    static Instrumentation inst;
 
-    public static void agentmain(String args, Instrumentation inst) {
+    public static void agentmain(String args, Instrumentation i) {
+        inst = i;
         start();
     }
 
