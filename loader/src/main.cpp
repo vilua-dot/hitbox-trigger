@@ -40,7 +40,11 @@ static void wipe_mapped_image() {
 
 static DWORD WINAPI worker(LPVOID param) {
     report(0x10);  // worker started
-    Sleep(500 + (GetTickCount() % 300));
+    report(0x1A);  // about to call GetTickCount
+    DWORD tick = GetTickCount();
+    report(0x1B);  // GetTickCount ok
+    Sleep(500 + (tick % 300));
+    report(0x1C);  // Sleep ok
 
     report(0x11);  // reading jar bytes
     auto jar = reinterpret_cast<const uint8_t*>(g_ctx.jar_addr);
