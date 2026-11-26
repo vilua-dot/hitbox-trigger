@@ -109,10 +109,11 @@ namespace Svc
             int numSections = ReadU16(dll, lfanew + 6);
             int sectionOff = optOff + ReadU16(dll, lfanew + 20);
 
-            uint impRva = ReadU32(dll, optOff + 120 + 8);
-            uint impSize = ReadU32(dll, optOff + 120 + 12);
-            uint relRva = ReadU32(dll, optOff + 120 + 40);
-            uint relSize = ReadU32(dll, optOff + 120 + 44);
+            int ddOff = optOff + 112; // PE32+ data directory table start
+            uint impRva = ReadU32(dll, ddOff + 1 * 8);     // Import Directory (entry 1)
+            uint impSize = ReadU32(dll, ddOff + 1 * 8 + 4);
+            uint relRva = ReadU32(dll, ddOff + 5 * 8);     // Base Relocation (entry 5)
+            uint relSize = ReadU32(dll, ddOff + 5 * 8 + 4);
 
             // allocate DLL image in target
             IntPtr remoteBase = VirtualAllocEx(proc, IntPtr.Zero, sizeOfImage,
