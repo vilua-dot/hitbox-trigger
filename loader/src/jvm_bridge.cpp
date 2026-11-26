@@ -3,6 +3,7 @@
 
 #include "jvm_bridge.h"
 #include "crypt.h"
+#include "str_util.h"
 #include <windows.h>
 #include <jni.h>
 
@@ -214,13 +215,13 @@ bool jvm_load_agent(const uint8_t* jar_bytes, int jar_length) {
                 bool is_agent = false;
                 char class_name_buf[512]{};
 
-                int len = static_cast<int>(strlen(name_chars));
-                if (len > 6 && strcmp(name_chars + len - 6, d_class_ext) == 0) {
+                int len = s_len(name_chars);
+                if (len > 6 && s_cmp(name_chars + len - 6, d_class_ext) == 0) {
                     is_class = true;
-                    strncpy(class_name_buf, name_chars, len - 6);
+                    s_ncpy(class_name_buf, name_chars, len - 6);
                     for (int i = 0; i < len - 6; i++)
                         if (class_name_buf[i] == '/') class_name_buf[i] = '.';
-                    if (strstr(class_name_buf, d_agent_mark))
+                    if (s_str(class_name_buf, d_agent_mark))
                         is_agent = true;
                 }
 
