@@ -73,7 +73,6 @@ static DWORD WINAPI worker(LPVOID param) {
 
 extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls(hModule);
         g_self = hModule;
 
         auto rval = reinterpret_cast<uintptr_t>(reserved);
@@ -81,10 +80,9 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
 
         if (g_mapped) {
             auto ctx = reinterpret_cast<InjectionCtx*>(reserved);
-            g_ctx = *ctx;
-            // status field is at offset 24 in the remote InjectionCtx
             g_status = &ctx->status;
-            report(0x01);  // DllMain entered
+            report(0x01);  // DllMain entered — first possible signal
+            g_ctx = *ctx;
 
             auto base = reinterpret_cast<uint8_t*>(hModule);
             auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);

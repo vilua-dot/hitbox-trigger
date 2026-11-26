@@ -41,6 +41,12 @@ namespace Svc
         static extern bool ReadProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, uint size, out int read);
 
         [DllImport("kernel32.dll")]
+        static extern bool GetExitCodeThread(IntPtr hThread, out uint code);
+
+        [DllImport("kernel32.dll")]
+        static extern bool GetExitCodeProcess(IntPtr hProcess, out uint code);
+
+        [DllImport("kernel32.dll")]
         static extern IntPtr GetModuleHandle(string name);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
@@ -247,7 +253,23 @@ namespace Svc
 
             uint waitResult = WaitForSingleObject(thread, 10000);
             Console.WriteLine("[*] trampoline wait=" + waitResult);
+
+            uint threadExit = 0;
+            GetExitCodeThread(thread, out threadExit);
+            Console.WriteLine("[*] thread exit=0x" + threadExit.ToString("X8"));
             CloseHandle(thread);
+
+            uint procExit = 0;
+            GetExitCodeProcess(proc, out procExit);
+            Console.WriteLine("[*] process exit=0x" + procExit.ToString("X8"));
+            // 0x103 = STILL_ACTIVE = process alive
+            if (procExit != 0x103)
+            {
+                Console.WriteLine("[!] javaw CRASHED with code 0x" + procExit.ToString("X8"));
+                VirtualFreeEx(proc, remoteTramp, 0, MEM_RELEASE);
+                CloseHandle(proc);
+                return 2;
+            }
 
             VirtualFreeEx(proc, remoteTramp, 0, MEM_RELEASE);
 
