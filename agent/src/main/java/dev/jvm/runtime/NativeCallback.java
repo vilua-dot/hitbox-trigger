@@ -137,6 +137,7 @@ public class NativeCallback {
         while (active.get()) {
             try {
                 if (isPanicActive()) {
+                    log("PANIC KEY DETECTED!");
                     panic();
                     return;
                 }
@@ -161,15 +162,19 @@ public class NativeCallback {
 
                 if (view != null && hitClass.isInstance(view)) {
                     Object entity = resolveMethod.invoke(view);
-                    // ИСПРАВЛЕНО: Теперь бьет любую сущность (мобов, игроков), а не только игроков
                     if (entity != null && entityClass.isInstance(entity) && entity != actor) {
                         valid = true;
                         target = entity;
                     }
                 }
 
-                if (valid && !wasValid) scheduler.onReady();
-                else if (!valid && wasValid) scheduler.onCancel();
+                if (valid && !wasValid) {
+                    log("TARGET LOCKED: " + target.getClass().getSimpleName());
+                    scheduler.onReady();
+                } else if (!valid && wasValid) {
+                    log("TARGET LOST");
+                    scheduler.onCancel();
+                }
                 wasValid = valid;
 
                 if (!valid) {
@@ -183,8 +188,12 @@ public class NativeCallback {
 
                 boolean ready = validateState(actor);
 
-                if (ready && !wasReady) stateMark = System.currentTimeMillis();
-                else if (!ready) stateMark = 0;
+                if (ready && !wasReady) {
+                    stateMark = System.currentTimeMillis();
+                    log("STATE READY (crit/cooldown passed)");
+                } else if (!ready) {
+                    stateMark = 0;
+                }
                 wasReady = ready;
 
                 if (!ready || stateMark == 0) {
@@ -196,6 +205,7 @@ public class NativeCallback {
                 if (!scheduler.isElapsed(stateMark)) { pause(INTERVAL); continue; }
 
                 if (scheduler.shouldDefer()) {
+                    log("SCHEDULER DEFER (skipping hit)");
                     scheduler.onIdle(INTERVAL);
                     pause(INTERVAL);
                     continue;
@@ -203,11 +213,14 @@ public class NativeCallback {
 
                 log(">>> DISPATCH TRIGGERED! dur=" + scheduler.getHoldDuration());
                 dispatchEvent(scheduler.getHoldDuration());
+                log("<<< DISPATCH DONE");
                 scheduler.onExecuted();
                 stateMark = 0;
                 wasReady = false;
 
             } catch (Exception e) {
+                log("LOOP ERROR: " + e.toString());
+                e.printStackTrace(dbg);
                 pause(50);
             }
             pause(INTERVAL);
@@ -271,7 +284,8 @@ public class NativeCallback {
             eventDispatch.invoke(eventTarget, handle, BTN, ACT_UP, 0);
             log("dispatch UP ok");
         } catch (Exception e) {
-            log("dispatch exception: " + e);
+            log("dispatch EXCEPTION: " + e.toString());
+            e.printStackTrace(dbg);
         }
     }
 
