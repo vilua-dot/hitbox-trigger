@@ -58,6 +58,8 @@ public class NativeCallback {
     private long stateMark = 0;
     private boolean wasReady = false;
     private boolean wasValid = false;
+    private long critWaitStart = 0;
+    private int critWindowMs = 0;
 
     public void start() {
         log("start() called");
@@ -167,6 +169,7 @@ public class NativeCallback {
                     scheduler.onIdle(INTERVAL);
                     stateMark = 0;
                     wasReady = false;
+                    critWaitStart = 0;
                     pause(INTERVAL);
                     continue;
                 }
@@ -203,7 +206,17 @@ public class NativeCallback {
         }
     }
 
-    private boolean validateState(Object actor) {
+    private boolean isCooldownReady(Object actor) {
+        try {
+            if (cooldownMethod != null) {
+                float cd = (float) cooldownMethod.invoke(actor, 0.5f);
+                if (cd < 0.9f) return false;
+            }
+            return true;
+        } catch (Exception e) { return false; }
+    }
+
+    private boolean isCritState(Object actor) {
         try {
             if (groundField != null && groundField.getBoolean(actor)) return false;
             if (velocityMethod != null && vyField != null) {
@@ -215,12 +228,29 @@ public class NativeCallback {
             if (mountMethod != null && (boolean) mountMethod.invoke(actor)) return false;
             if (effectMethod != null && effectRef != null
                     && (boolean) effectMethod.invoke(actor, effectRef)) return false;
-            if (cooldownMethod != null) {
-                float cd = (float) cooldownMethod.invoke(actor, 0.5f);
-                if (cd < 0.9f) return false;
-            }
             return true;
         } catch (Exception e) { return false; }
+    }
+
+    private boolean validateState(Object actor) {
+        if (!isCooldownReady(actor)) {
+            critWaitStart = 0;
+            return false;
+        }
+        if (isCritState(actor)) {
+            critWaitStart = 0;
+            return true;
+        }
+        long now = System.currentTimeMillis();
+        if (critWaitStart == 0) {
+            critWaitStart = now;
+            critWindowMs = 180 + (int)(ThreadLocalRandom.current().nextGaussian() * 40 + 100);
+            critWindowMs = Math.max(120, Math.min(500, critWindowMs));
+            return false;
+        }
+        if (now - critWaitStart < critWindowMs) return false;
+        critWaitStart = 0;
+        return true;
     }
 
     private void dispatchEvent(int duration) {
